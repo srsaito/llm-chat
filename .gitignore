@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Claude Code local settings (machine-specific permissions)
+.claude/
+
+# Local data (persistent memory lives in ~/.llm-chat by default, not here,
+# but ignore any stray local copy)
+*.jsonl

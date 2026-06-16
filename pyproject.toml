@@ -1,0 +1,8 @@
+[project]
+name = "llm-chat"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "ddgs>=9.14.4",
+    "ollama>=0.6.2",
+]
