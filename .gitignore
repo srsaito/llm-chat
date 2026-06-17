@@ -10,3 +10,9 @@ venv/
 # Local data (persistent memory lives in ~/.llm-chat by default, not here,
 # but ignore any stray local copy)
 *.jsonl
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
