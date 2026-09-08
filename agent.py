@@ -10,8 +10,8 @@ This demonstrates native Ollama tool-calling (no MCP, no framework):
 On top of that it adds:
   * Conversational memory  — follow-up questions see the running thread.
   * Persistent memory (RAG) — past exchanges are embedded and recalled across
-    sessions (see memory.py); surfaced both automatically and via a
-    `recall_memory` tool.
+    sessions (see the shared llm_chat_core.memory module); surfaced both
+    automatically and via a `recall_memory` tool.
   * Model switching        — type `change model` to pick any installed
     tool-capable model for the rest of the session.
 
@@ -30,11 +30,17 @@ import sys
 import uuid
 from datetime import date
 
-from ddgs import DDGS
 from ollama import Client
 
-import memory as memory_mod
-from memory import MemoryStore
+from llm_chat_core import memory as memory_mod
+from llm_chat_core.memory import MemoryStore
+from llm_chat_core.tools import (
+    DISPATCH,
+    RECALL_MEMORY_TOOL,
+    WEB_SEARCH_TOOL,
+    _format_memories,
+    web_search,  # noqa: F401  (re-exported for tests / parity)
+)
 
 MODEL = os.environ.get("LLM_MODEL", "gemma4:31b")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
@@ -43,74 +49,21 @@ MAX_HISTORY_TURNS = 8    # user/assistant pairs kept in the live context
 NUM_CTX = 16384          # context window; ample on this hardware
 
 
-# --- the web_search tool ----------------------------------------------------
-def web_search(query: str, max_results: int = 5) -> str:
-    """Run a DuckDuckGo search and return formatted text results."""
-    with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=max_results))
-    if not results:
-        return "No results found."
-    blocks = []
-    for i, r in enumerate(results, 1):
-        blocks.append(
-            f"{i}. {r.get('title', '')}\n"
-            f"   URL: {r.get('href', '')}\n"
-            f"   {r.get('body', '')}"
-        )
-    return "\n\n".join(blocks)
+# --- embedding adapter ------------------------------------------------------
+def make_ollama_embed(client: Client):
+    """Adapt Ollama's ``client.embed`` to the core MemoryStore's embed_fn seam.
 
+    Core applies the embeddinggemma task prefixes and L2-normalization; this
+    adapter just sends the already-prefixed text to the embedding model and
+    returns the raw vector.
+    """
 
-WEB_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": (
-            "Search the web for current, real-time, or uncertain information. "
-            "Use this for recent events, news, prices, or any fact you are not "
-            "confident about from memory."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query."},
-                "max_results": {
-                    "type": "integer",
-                    "description": "How many results to return (default 5).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
+    def embed(text: str) -> list[float]:
+        resp = client.embed(model=memory_mod.EMBED_MODEL, input=[text])
+        return list(resp["embeddings"][0])
 
-RECALL_MEMORY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "recall_memory",
-        "description": (
-            "Search your long-term memory of previous conversations with this "
-            "user. Relevant memories are usually provided to you automatically; "
-            "only call this if you need to look up something that was NOT already "
-            "shown to you (e.g. an older detail, or with different search terms)."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to look for in past conversations.",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "How many memories to return (default 5).",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
+    return embed
 
-DISPATCH = {"web_search": web_search}
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant with access to a web_search tool. "
@@ -127,14 +80,6 @@ SYSTEM_PROMPT = (
     "time-sensitive. Relevant notes are provided automatically — only call "
     "recall_memory if you need something that isn't already shown."
 )
-
-
-def _format_memories(hits: list[dict], answer_chars: int) -> str:
-    lines = []
-    for h in hits:
-        day = h.get("ts", "")[:10]
-        lines.append(f"- ({day}) Q: {h['q']} → A: {h['a'][:answer_chars]}")
-    return "\n".join(lines)
 
 
 def answer(
@@ -290,8 +235,9 @@ def main() -> None:
     mem: MemoryStore | None = None
     if not args.no_memory:
         try:
-            mem = MemoryStore(client)
-            memory_mod._embed(client, "probe", is_query=True)  # fail fast
+            embed_fn = make_ollama_embed(client)
+            mem = MemoryStore(embed_fn)
+            memory_mod._embed(embed_fn, "probe", is_query=True)  # fail fast
         except Exception as e:
             print(
                 f"  → [memory] disabled ({e}); "
